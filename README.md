@@ -7,9 +7,11 @@ The companion Rust daemon and CLI live in [tandem](https://github.com/Chr1sC0de/
 
 ## Status
 
-Initial implementation. Thirteen standalone Lua gateway tests pass. Real Neovim
-integration and the Rust build have not yet been run in the authoring environment,
-which lacks those executables. An end-to-end harness and CI are included.
+Initial implementation. All 13 Lua gateway tests pass inside Neovim 0.12.5.
+The companion Rust build and five unit tests pass locally; the complete daemon
+and real Neovim integration pass in GitHub Actions. The authoring workspace
+blocks Unix sockets, preventing the local daemon/editor integration run.
+See [VERIFICATION.md](VERIFICATION.md) for the recorded results.
 
 Requires Neovim 0.10+, Linux/macOS, and the `tandem` executable on PATH.
 Currently supports one Neovim process per project, multiple participating agents,
@@ -18,7 +20,7 @@ process for another project; changing cwd does not switch the daemon root.
 
 ## Install
 
-Build/install the CLI from the companion repository with `cargo install --path .`.
+Build/install the CLI from the companion repository with `cargo install --locked --path .`.
 Use this lazy.nvim specification:
 
 ```lua
@@ -113,6 +115,8 @@ BOMs, CRLF, binary files, rename/delete and multi-file operations are unsupporte
 ## Tests
 
 ```sh
+nvim --headless -u NONE -l tests/gate_spec.lua
+# Or use standalone Lua:
 lua tests/gate_spec.lua
 # Or, if only TeX Lua is available:
 texlua tests/gate_spec.lua
@@ -123,5 +127,9 @@ python3 tests/e2e.py ../tandem/target/debug/tandem
 
 The standalone tests cover dirty-buffer races, stale revisions, save failures,
 load autocmd mutations, deadlines, unsupported text and save verification. The
-end-to-end test starts the real daemon and Neovim and exercises a human save
-while an agent edit waits.
+end-to-end test starts Neovim, verifies automatic daemon startup, and exercises
+a human save while an agent edit waits. It also checks that another file remains
+editable, stale proposals are rejected, fresh edits update the live buffer, undo
+reclaims the file, and new UTF-8, empty, and no-EOL files save correctly.
+Set `TANDEM_TEST_TMPDIR` to an existing, short writable directory when `/tmp`
+is unavailable. The full test requires permission to create Unix sockets.

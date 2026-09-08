@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,10 @@ def main():
         raise SystemExit("Neovim 0.10+ is required")
     plugin = str(pathlib.Path(__file__).resolve().parents[1])
     processes = []
-    with tempfile.TemporaryDirectory(prefix="td-e2e-", dir="/tmp") as temporary:
+    # Keep Unix socket paths short, while allowing restricted workspaces.
+    with tempfile.TemporaryDirectory(
+        prefix="td-e2e-", dir=os.environ.get("TANDEM_TEST_TMPDIR", "/tmp")
+    ) as temporary:
         base = pathlib.Path(temporary)
         root = base / "repo"
         root.mkdir()
@@ -61,14 +65,16 @@ def main():
                 time.sleep(0.025)
             raise AssertionError("timed out waiting for condition")
 
+        daemon_pid = None
         log = (base / "process.log").open("wb")
         try:
-            daemon = subprocess.Popen(argv + ["serve"], stdout=log, stderr=log)
-            processes.append(daemon)
-            until(lambda: run_cli("status")["ok"])
+            # Exercise the normal setup path: Neovim must start the daemon.
             editor = subprocess.Popen([nvim, "--headless", "--listen", socket_path, "-u", str(config)],
                                       stdin=subprocess.DEVNULL, stdout=log, stderr=log)
             processes.append(editor)
+            until(lambda: run_cli("status")["ok"])
+            daemon_pid = run_cli("status")["pid"]
+            assert isinstance(daemon_pid, int) and daemon_pid > 1
             until(lambda: json.loads(expr("vim.json.encode(require('tandem').status())"))["connected"])
 
             old = run_cli("read", "a.txt")["revision"]
@@ -81,6 +87,11 @@ def main():
             until(lambda: run_cli("status")["waiting"] == 1)
             assert pending.poll() is None
             assert file.read_text() == "base\n"
+            # Only a.txt is leased: another agent can still edit another file.
+            other = run_cli("write", "other.txt", "--expect", "missing", "--content-file", str(proposal))
+            assert other["ok"] and (root / "other.txt").read_text() == "agent\n"
+            assert pending.poll() is None
+            assert json.loads(expr("vim.json.encode(vim.bo.modified)")) is True
             expr("vim.cmd('write')")
             output, _ = pending.communicate(timeout=8)
             assert json.loads(output)["error"]["code"] == "stale_revision", output
@@ -103,12 +114,18 @@ def main():
                 assert (root / name).read_bytes() == text.encode()
                 assert result["revision"] == hashlib.sha256(text.encode()).hexdigest()
 
-            print("passed: save waiting, stale rejection, live buffer writes, undo leases, creation, UTF-8, empty/no-EOL files")
+            print("passed: automatic daemon startup, save waiting, independent-file edits, stale rejection, live buffer writes, undo leases, creation, UTF-8, empty/no-EOL files")
         finally:
             for process in reversed(processes):
                 if process.poll() is None:
                     process.terminate()
                 process.communicate(timeout=5)
+            # This daemon belongs to the fresh temporary project above.
+            if daemon_pid is not None:
+                try:
+                    os.kill(daemon_pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
             log.close()
             if sys.exc_info()[0] is not None:
                 print((base / "process.log").read_text(errors="replace"), file=sys.stderr)
