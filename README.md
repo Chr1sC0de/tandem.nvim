@@ -14,6 +14,7 @@ blocks Unix sockets, preventing the local daemon/editor integration run.
 See [VERIFICATION.md](VERIFICATION.md) for the recorded results.
 
 Requires Neovim 0.10+, Linux/macOS, and the `tandem` executable on PATH.
+The Codex launch helper requires Tandem CLI 0.2 or newer.
 Currently supports one Neovim process per project, multiple participating agents,
 and ordinary UTF-8 text files up to 1 MiB with Unix newlines. Start a new Neovim
 process for another project; changing cwd does not switch the daemon root.
@@ -73,6 +74,20 @@ shows daemon state, retained claims and Herdr pane identity.
 
 ## Connect agents
 
+After the plugin connects, `require("tandem").codex_args({ cwd = project })`
+returns Codex arguments for a required project MCP server and a read-only native
+sandbox with escalation disabled. Append these arguments to a new Codex launch.
+It returns `nil, error` when the editor is disconnected, the CLI is missing,
+or the requested working directory belongs to another project. Treat that as a
+launch failure; do not fall back to unrestricted editing.
+
+Set `read_only = true` for analysis jobs. Their MCP server both hides and rejects
+the writer. Normal edit jobs use Tandem's writer while native patch and shell
+writes remain blocked. This can also block build commands that write artifacts
+into the project; it does not restrict other MCP servers or external programs.
+The helper sets arguments only for that invocation and preserves the user's
+model and instruction settings. Existing agents must be restarted to use it.
+
 Register the CLI's MCP command, `tandem --root /absolute/project mcp`, with each
 agent. Route reads and writes through `tandem_read_file` and `tandem_write_file`.
 The write tool waits while your buffer is dirty; after save, an old revision
@@ -116,6 +131,7 @@ BOMs, CRLF, binary files, rename/delete and multi-file operations are unsupporte
 
 ```sh
 nvim --headless -u NONE -l tests/gate_spec.lua
+nvim --headless -u NONE -l tests/codex_spec.lua
 # Or use standalone Lua:
 lua tests/gate_spec.lua
 # Or, if only TeX Lua is available:

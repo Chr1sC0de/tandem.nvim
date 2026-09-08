@@ -260,11 +260,24 @@ function M.statusline()
   return count > 0 and ("tandem: editing " .. count) or "tandem: ready"
 end
 
+function M.codex_args(options)
+  return require("tandem.codex").args({
+    connected = state.ready, root = state.root,
+    command = state.options and state.options.command,
+    state_home = state.options and state.options.state_home,
+  }, options)
+end
+
 function M.setup(options)
   if not state.stopped then return end
   state.options = vim.tbl_extend("force", { command = "tandem", reconnect_ms = 1000 }, options or {})
-  local root = state.options.root or vim.fs.root(0, ".git") or uv.cwd()
+  local argument = vim.fn.argv(0)
+  local argument_root = type(argument) == "string" and argument ~= "" and vim.fs.root(argument, ".git") or nil
+  local root = state.options.root or vim.fs.root(0, ".git") or argument_root
+    or vim.fs.root(uv.cwd(), ".git") or uv.cwd()
   state.root = normalize(uv.fs_realpath(root) or root)
+  state.options.state_home = normalize(state.options.state_home or vim.env.XDG_STATE_HOME
+    or ((vim.env.HOME or error("Set HOME or XDG_STATE_HOME")) .. "/.local/state"))
   state.owner = state.owner or ("nvim-" .. vim.fn.getpid() .. "-" .. tostring(uv.hrtime()))
   state.stopped = false
   local group = vim.api.nvim_create_augroup("Tandem", { clear = true })
