@@ -42,9 +42,13 @@ function M.args(connection, options)
   else
     enabled_tools[#enabled_tools + 1] = "tandem_write_file"
   end
+  local tool_settings = {}
+  for _, name in ipairs(enabled_tools) do
+    tool_settings[#tool_settings + 1] = name .. '={approval_mode="approve"}'
+  end
   local server = "{command=" .. quote(command) .. ",args=" .. array(args)
     .. ",enabled=true,required=true,startup_timeout_sec=10,tool_timeout_sec=35,enabled_tools="
-    .. array(enabled_tools) .. "}"
+    .. array(enabled_tools) .. ",tools={" .. table.concat(tool_settings, ",") .. "}}"
   return {
     "--sandbox", "read-only",
     "-c", 'approval_policy="never"',

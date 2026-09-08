@@ -43,6 +43,8 @@ config = tomllib.loads(sys.argv[1])["mcp_servers"]["tandem"]
 assert config["args"][3] == sys.argv[2]
 assert config["required"] is True
 assert config["tool_timeout_sec"] == 35
+assert set(config["tools"]) == set(config["enabled_tools"])
+assert all(tool["approval_mode"] == "approve" for tool in config["tools"].values())
 print("ok")
 ]], args[6], connection.state_home }, { text = true }):wait(5000)
   assert(result.code == 0, result.stderr)

@@ -77,6 +77,9 @@ shows daemon state, retained claims and Herdr pane identity.
 After the plugin connects, `require("tandem").codex_args({ cwd = project })`
 returns Codex arguments for a required project MCP server and a read-only native
 sandbox with escalation disabled. Append these arguments to a new Codex launch.
+The enabled Tandem tools receive explicit per-tool permission to reach the
+daemon under that sandbox. Other tools receive no additional permission.
+This launch integration is tested against Codex CLI 0.153.4.
 It returns `nil, error` when the editor is disconnected, the CLI is missing,
 or the requested working directory belongs to another project. Treat that as a
 launch failure; do not fall back to unrestricted editing.
