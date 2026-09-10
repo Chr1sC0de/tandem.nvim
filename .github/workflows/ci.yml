@@ -19,7 +19,23 @@ jobs:
           printf '%s  %s\n' bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875 "$RUNNER_TEMP/nvim.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
-      - name: Check Codex routing and configuration handling without model credentials
+      - name: Check gateway, lifecycle, recovery and Codex configuration
         run: |
+          nvim --headless -u NONE -i NONE -l tests/gate_spec.lua
+          nvim --headless -u NONE -i NONE -l tests/lifecycle_spec.lua
+          nvim --headless -u NONE -i NONE -l tests/recovery_spec.lua
           nvim --headless -u NONE -i NONE -l tests/codex_spec.lua
           nvim --headless -u NONE -i NONE -l tests/codex_config_spec.lua
+      - name: Check out Tandem CLI 0.2.0
+        uses: actions/checkout@v4
+        with:
+          repository: Chr1sC0de/tandem
+          ref: 1b30de8709a320879efa8e6c498cab6f14508b10
+          path: .ci/tandem
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the unchanged CLI
+        working-directory: .ci/tandem
+        run: cargo build --locked
+      - name: Exercise real Neovim lifecycle and daemon recovery
+        run: python3 tests/e2e.py .ci/tandem/target/debug/tandem

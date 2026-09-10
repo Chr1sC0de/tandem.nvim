@@ -136,6 +136,8 @@ test("starting Neovim in a Git subdirectory selects the shared project root", fu
 	local selected = tandem.status().root
 	vim.cmd.cd(previous)
 	vim.fn.jobstart, vim.fn.chansend = jobstart, chansend
+	-- This fixture owns no real bridge; do not run shutdown CLI checks at exit.
+	vim.api.nvim_del_augroup_by_name("Tandem")
 	assert(selected == root)
 	assert(started[3] == root)
 end)

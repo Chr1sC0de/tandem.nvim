@@ -9,7 +9,8 @@ Native agent tools and shell writes are not intercepted automatically.
 
 COMMANDS                                                  *tandem-commands*
 
-:TandemStatus       Show editor connection and dirty-file leases.
+:TandemStatus       Show local status plus asynchronously fetched daemon leases.
+:TandemRecover      Review and release a disconnected owner after confirmation.
 :TandemReconnect    Reconnect without dropping unsaved-file leases.
 :checkhealth tandem Check the connection and supported environment.
 
@@ -46,9 +47,36 @@ User TandemStatus is emitted on connection/lease changes.
 
 RECOVERY                                                  *tandem-recovery*
 
-Save successfully to release a file. Reload/discard releases a file; a failed
-save, force-close or disconnect retains it. Recover unsaved work before clearing
-a disconnected owner's claims with tandem release --owner OWNER.
-Use tandem status in a terminal to find the retained owner.
+Save, reload or undo to saved contents releases a file only when the buffer is
+unmodified and matches disk. Clearing 'modified' alone does not release a claim.
+Failed saves and later formatter edits remain protected.
+
+Discarding a buffer with :bd! releases claims after its text is unloaded. Closing
+a window/tab or hiding a dirty buffer does not discard its text. Renaming keeps
+claims for unsaved work at the old path, even if that path is reopened separately.
+
+Normal exit flushes pending saves and intentional discards, including :q!/:qa!
+when they actually exit. Delivery and verification share a one-second deadline.
+Abnormal exit or failed delivery leaves unresolved claims for recovery. Reconnect
+keeps the same owner; a new process cannot save away the old owner's leases.
+
+:TandemRecover lists disconnected owners and affected files. Recover or
+deliberately discard the old work first, then select its owner and confirm.
+Cancel is the default in both dialogs. Ownership and files are checked again
+before release; changes require fresh review. The connected owner is excluded,
+and the CLI rejects release if that owner reconnects before the request.
+
+The result reports remaining blockers. Recovery releases leases, not buffer
+contents. Status/release requests use the configured command, root and state_home
+with a five-second timeout per request. There is no automatic crash recovery or
+lease expiry, and no agent-accessible recovery tool.
+
+After connection, a retained owner is reported once per Neovim session.
+:TandemStatus includes daemon leases; require('tandem').status() remains
+synchronous and retains its existing fields.
+
+Manual recovery is also available with tandem release --owner OWNER after
+reviewing tandem status. Never delete leases.json. Uses CLI 0.2.0/protocol 1;
+restart Neovim after updating the plugin.
 
  vim:tw=78:ts=8:noet:ft=help:norl:

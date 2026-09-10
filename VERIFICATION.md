@@ -50,3 +50,26 @@ write tools still require adapters.
   evidence that the installed Codex configuration API or model routing passed.
 - Repository edits were successfully applied through the connected Tandem writer.
   Rust daemon, lease, and protocol code did not change.
+
+## Lease lifecycle and guided recovery — 2026-09-11
+
+Local environment: Neovim 0.12.0, installed Tandem CLI 0.2.0.
+
+- Reproduced undo-to-saved, forced buffer deletion, immediate save/exit, stale
+  bridge callbacks, renamed-buffer ownership, and queued rename/save failures
+  with failing regressions before their fixes.
+- 16 lifecycle tests pass, using real buffers/autocmds with disk and daemon
+  boundaries replaced. Separate Neovim subprocesses cover actual normal exits
+  and SIGTERM; those subprocess tests do not use a real daemon.
+- 12 recovery tests pass, covering cancellation, selective release, changed
+  ownership/file lists, connected owners, duplicate/stale dialogs, startup
+  notices, API compatibility, malformed responses, missing CLI and timeouts.
+- Existing suites pass: 13 gateway, nine Codex launch, seven configuration tests.
+- The real-daemon harness now covers lifecycle and crash/recovery scenarios.
+  Local execution remains blocked at temporary-directory creation by EROFS;
+  these new transport scenarios have not passed in this environment.
+- CI builds unchanged CLI 0.2.0 at
+  `1b30de8709a320879efa8e6c498cab6f14508b10` and runs all Lua suites plus the
+  real-daemon harness. No remote CI result is claimed here.
+- Project edits were applied through Tandem. The Rust daemon, protocol,
+  persisted lease format and Codex launch protections were not changed.

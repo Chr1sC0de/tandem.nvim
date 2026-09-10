@@ -14,7 +14,7 @@ blocks Unix sockets, preventing the local daemon/editor integration run.
 See [VERIFICATION.md](VERIFICATION.md) for the recorded results.
 
 Requires Neovim 0.10+, Linux/macOS, and the `tandem` executable on PATH.
-The Codex launch helper requires Tandem CLI 0.2 or newer.
+The Codex launch helper and lease recovery require Tandem CLI 0.2 or newer.
 Currently supports one Neovim process per project, multiple participating agents,
 and ordinary UTF-8 text files up to 1 MiB with Unix newlines. Start a new Neovim
 process for another project; changing cwd does not switch the daemon root.
@@ -47,7 +47,8 @@ Your existing Codex commands, chat panel, and Herdr launcher can remain in place
 They still need agent-side gateway configuration to participate.
 
 The plugin automatically starts/reconnects the daemon. It claims a file on the
-first text change and releases it after successful save. There are no per-edit
+first text change and releases it after successful save, undo back to saved
+content, or actual discard. There are no per-edit
 commands to invoke and no proposal-acceptance flow.
 
 ## Configure
@@ -68,7 +69,8 @@ function() return require("tandem").statusline() end
 ```
 
 `User TandemStatus` is emitted when connection/lease state changes.
-`:TandemStatus` displays editor state; `:TandemReconnect` reconnects the bridge;
+`:TandemStatus` displays editor state and asynchronously fetches retained leases;
+`:TandemRecover` reviews disconnected owners; `:TandemReconnect` reconnects the bridge;
 `:checkhealth tandem` checks the connection. `tandem status` in a terminal also
 shows daemon state, retained claims and Herdr pane identity.
 
@@ -145,23 +147,58 @@ midway through. Only participating file operations wait.
   can create new unsaved work, which remains protected until another save.
 - A buffer differing from disk is never silently overwritten, even if its
   modified flag is false. Reload or reconcile it before retrying.
-- Explicit reload/discard releases a lease. Undoing back to clean without a save
-  does not release it automatically.
-- Force-closing or renaming a dirty buffer can retain a lease for its old path.
-  Reopen/recover it before discarding; this conservative behavior is intentional.
-- Disconnects preserve claims. Reconnection replays known saves/discards. After
-  an editor crash, recover unsaved work before using the CLI's
-  `tandem release --owner OWNER` for that disconnected owner.
+- Save, reload, and undo to saved content release a lease only when the buffer
+  is unmodified and its contents match disk. Setting `nomodified` alone cannot
+  bypass protection.
+- Actual discards such as `:bd!` release their claims once the text is unloaded.
+  Closing a window or tab, hiding a dirty buffer, or renaming it preserves claims
+  while the unsaved text remains loaded. Reopening a renamed buffer's old path
+  does not release the renamed buffer's unsaved work.
+- Normal exit flushes pending saves/discards and closes the editor bridge, with
+  up to one second for delivery and verification. This includes work deliberately
+  abandoned by `:q!` or `:qa!` when those commands actually exit the process.
+  Abnormal exits and failed delivery leave unresolved claims for recovery.
+- Disconnects preserve claims. Reconnection replays known saves/discards and
+  keeps the same owner for all Codex commands sharing this Neovim process.
+  A new Neovim process cannot release an earlier owner's claims by saving.
 - No automatic timeout releases an unsaved-file lease.
 
 The protocol is cooperative and limited to the configured project. It does not
 protect against unrelated programs writing files behind Neovim's back. Symlinks,
 BOMs, CRLF, binary files, rename/delete and multi-file operations are unsupported.
 
+## Review retained leases
+
+After connection, Tandem notifies once per disconnected owner that retained work
+needs review. `:TandemStatus` shows those owners and their files alongside the
+current editor's claims. The synchronous `require("tandem").status()` API keeps
+its existing fields and does not run a CLI request.
+
+Use `:TandemRecover` after recovering or deliberately discarding the old work:
+
+1. Select a disconnected owner and review its affected files.
+1. Confirm that the work has been recovered or deliberately discarded. Cancel is
+   the default; cancelling either dialog changes nothing.
+1. Tandem refreshes ownership and file lists before releasing. If they changed,
+   it returns to selection for a fresh review. The CLI also refuses to release
+   an owner that is currently connected.
+1. Review the completion report for any remaining blockers.
+
+Recovery clears leases; it does not restore buffer contents. CLI requests use
+the configured executable, root and state directory, with a five-second timeout
+per request. Failures are reported without automatically retrying a release.
+The existing `tandem release --owner OWNER` command remains available for manual
+recovery. Never delete `leases.json`.
+
+The change uses CLI 0.2.0 and protocol 1 without changing persisted state.
+Restart Neovim after updating the plugin to load the new lifecycle handlers.
+
 ## Tests
 
 ```sh
 nvim --headless -u NONE -l tests/gate_spec.lua
+nvim --headless -u NONE -i NONE -l tests/lifecycle_spec.lua
+nvim --headless -u NONE -i NONE -l tests/recovery_spec.lua
 nvim --headless -u NONE -l tests/codex_spec.lua
 nvim --headless -u NONE -l tests/codex_config_spec.lua
 # Or use standalone Lua:
@@ -181,6 +218,14 @@ editable, stale proposals are rejected, fresh edits update the live buffer, undo
 reclaims the file, and new UTF-8, empty, and no-EOL files save correctly.
 Set `TANDEM_TEST_TMPDIR` to an existing, short writable directory when `/tmp`
 is unavailable. The full test requires permission to create Unix sockets.
+
+The lifecycle suite uses real Neovim buffers/autocmds with controlled disk and
+process boundaries. Subprocess cases exercise actual forced quits, immediate
+save/quit, hidden-buffer exit and fatal signals. Recovery tests cover cancellation,
+selected-owner release, ownership changes, stale dialogs and CLI failures.
+The end-to-end harness also covers crashes followed by new editor sessions,
+guided recovery, concurrent clients, and stable ownership across reconnects.
+CI builds a pinned, unchanged CLI 0.2.0 and runs these real-daemon scenarios.
 
 The Codex launch tests cover editing/analysis guidance, preservation of existing
 instructions, TOML escaping, and configuration lookup failures. Configuration
