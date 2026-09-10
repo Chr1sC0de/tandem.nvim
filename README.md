@@ -79,10 +79,38 @@ returns Codex arguments for a required project MCP server and a read-only native
 sandbox with escalation disabled. Append these arguments to a new Codex launch.
 The enabled Tandem tools receive explicit per-tool permission to reach the
 daemon under that sandbox. Other tools receive no additional permission.
-This launch integration is tested against Codex CLI 0.153.4.
+The routing override uses Codex's documented `developer_instructions` setting
+and its app-server `config/read` API. CLI 0.154.0 is the current local target;
+the credentialed smoke test below verifies behavior for your installed version.
 It returns `nil, error` when the editor is disconnected, the CLI is missing,
 or the requested working directory belongs to another project. Treat that as a
 launch failure; do not fall back to unrestricted editing.
+
+The helper adds developer-level guidance selecting Tandem for project edits,
+including discovery of deferred tools and recovery from busy, stale, or uncertain
+writes. It explicitly replaces generic native-`apply_patch` guidance for this
+project. A read-only native sandbox does **not** mean Tandem editing is unavailable.
+
+By default, the helper starts a short-lived `codex app-server` in the launch cwd
+to read the effective `developer_instructions`, then appends Tandem's guidance.
+It starts no model turn and changes no Codex configuration files. This lookup
+has a five-second timeout and returns `nil, error` if configuration cannot be
+read, rather than silently losing existing instructions.
+
+Optional launch fields:
+
+- `codex_command`: the Codex executable to query (default: `"codex"`). Launch
+  that same executable with the returned arguments.
+- `developer_instructions`: the host's already-resolved instruction string.
+  When supplied, the helper appends routing guidance without querying Codex.
+  Use this when the host supplies a CLI profile or instruction override; include
+  its complete effective value. An empty string explicitly means none.
+
+Append the returned arguments **after** other launch configuration overrides,
+and use the same cwd and environment for the lookup and actual launch. The
+automatic lookup resolves on-disk configuration, not additional CLI profiles or
+overrides supplied by the host. Higher-priority host rules that prohibit Tandem
+must be corrected in that host; MCP descriptions cannot override them.
 
 Set `read_only = true` for analysis jobs. Their MCP server both hides and rejects
 the writer. Normal edit jobs use Tandem's writer while native patch and shell
@@ -135,6 +163,7 @@ BOMs, CRLF, binary files, rename/delete and multi-file operations are unsupporte
 ```sh
 nvim --headless -u NONE -l tests/gate_spec.lua
 nvim --headless -u NONE -l tests/codex_spec.lua
+nvim --headless -u NONE -l tests/codex_config_spec.lua
 # Or use standalone Lua:
 lua tests/gate_spec.lua
 # Or, if only TeX Lua is available:
@@ -152,3 +181,32 @@ editable, stale proposals are rejected, fresh edits update the live buffer, undo
 reclaims the file, and new UTF-8, empty, and no-EOL files save correctly.
 Set `TANDEM_TEST_TMPDIR` to an existing, short writable directory when `/tmp`
 is unavailable. The full test requires permission to create Unix sockets.
+
+The Codex launch tests cover editing/analysis guidance, preservation of existing
+instructions, TOML escaping, and configuration lookup failures. Configuration
+transport tests exercise initialization, fragmented JSON, errors, and timeouts
+without model credentials. These checks run in CI.
+
+To verify actual model tool selection, explicitly run the credentialed smoke
+test from this checkout after `codex login`:
+
+```sh
+TANDEM_CODEX_SMOKE=1 TANDEM_CLI=/absolute/path/to/tandem \
+  nvim --headless -u NONE -i NONE -l tests/codex_smoke.lua
+```
+
+It uses a temporary project and this headless Neovim as the attached editor,
+sends a plain function-removal request in edit and analysis modes, and checks
+Tandem tool-call events, saved content, and the live buffer. This small fixture
+requires no native patch or shell calls. Each Codex turn has a 120-second limit.
+The test uses the configured model and optionally `TANDEM_CODEX` for a different
+Codex executable. Missing opt-in or credentials exits with status 77 (not run).
+It prints the location of a local JSON evidence report and stops its isolated
+daemon. It does not modify your project's source files.
+
+A passing configuration suite alone does not establish successful model routing.
+If a Codex version does not expose MCP calls in its JSON events, the smoke test
+fails rather than claiming tool-selection coverage. See Codex's
+[configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+and [app-server protocol](https://learn.chatgpt.com/docs/app-server) for the
+interfaces used by the instruction lookup.

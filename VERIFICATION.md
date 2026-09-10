@@ -30,3 +30,23 @@ transport was verified separately on GitHub's Linux runner with Neovim 0.12.5.
 macOS, a full Herdr session, and interception of native agent tools have not been
 verified. Participating agents must use Tandem's gateway; native edit and shell
 write tools still require adapters.
+
+## Codex edit routing — 2026-09-10
+
+- Reproduced the missing launch-guidance failure with a regression test before
+  adding the fix.
+- Nine Codex launch tests pass, including instruction preservation, edit versus
+  analysis behavior, escaping, configuration failures, and project-root selection.
+- Seven configuration tests pass, including a real subprocess-pipe handshake,
+  fragmented responses, missing configuration, transport errors, and timeouts.
+- All 13 existing gateway tests pass. `git diff --check` passes.
+- The opt-in smoke test correctly reports not run with exit status 77 by default.
+  The opt-in run with the installed Tandem executable reached fixture setup, then
+  failed with EROFS creating its temporary project. Its credentialed edit/analysis
+  cases have not been verified in this environment.
+- Installed Codex CLI: 0.154.0. A real `codex app-server` configuration probe
+  cannot start here because SQLite initialization requires writes outside the
+  native read-only sandbox. Therefore the passing transport fixture is not
+  evidence that the installed Codex configuration API or model routing passed.
+- Repository edits were successfully applied through the connected Tandem writer.
+  Rust daemon, lease, and protocol code did not change.

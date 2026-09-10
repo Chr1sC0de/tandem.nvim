@@ -19,6 +19,27 @@ require('tandem').setup({command = 'tandem', reconnect_ms = 1000})
 require('tandem').status()      Returns connected, owner, root, dirty, error.
 require('tandem').statusline()  Optional statusline component.
 
+require('tandem').codex_args({cwd = project, read_only = false})
+    Returns protected Codex arguments, or nil, error. Append them after other
+    launch overrides. Native writes remain read-only; edit sessions use Tandem.
+    Existing developer instructions are read through codex app-server and
+    preserved before adding mode-specific routing guidance (5 second timeout).
+    Restart Codex sessions after updating the plugin.
+
+Optional codex_args fields:
+    path                    Validate a target path within the attached project.
+    codex_command           Codex executable to query (default: 'codex').
+    developer_instructions  Host's complete effective instruction string; skips
+                            the config lookup when supplied. Required to
+                            preserve host CLI profile/instruction overrides.
+                            An empty string explicitly means no custom text.
+    read_only               Analysis mode: hide the writer and prohibit edits.
+
+Use the same cwd, environment and executable for lookup and launch. Configuration
+lookup failures abort launch; check Codex installation/configuration. For missing
+Tandem tools or a disconnected editor, use :TandemStatus or :TandemReconnect.
+Do not enable native writes as a recovery step.
+
 Optional setup fields: root, state_home. Defaults use git root/cwd and XDG state.
 Changing cwd after setup does not change the attached root.
 User TandemStatus is emitted on connection/lease changes.

@@ -3,57 +3,118 @@ local uv = vim.uv or vim.loop
 
 -- JSON strings use TOML-compatible escapes except the optional escaped slash.
 local function quote(value)
-  return vim.json.encode(value):gsub("\\/", "/")
+	return vim.json.encode(value):gsub("\\/", "/")
 end
 
 local function array(values)
-  local encoded = {}
-  for _, value in ipairs(values) do encoded[#encoded + 1] = quote(value) end
-  return "[" .. table.concat(encoded, ",") .. "]"
+	local encoded = {}
+	for _, value in ipairs(values) do
+		encoded[#encoded + 1] = quote(value)
+	end
+	return "[" .. table.concat(encoded, ",") .. "]"
 end
 
 local function inside(root, path)
-  return path == root or path:sub(1, #root + 1) == root .. "/"
+	return path == root or path:sub(1, #root + 1) == root .. "/"
+end
+
+local function instructions(root, read_only)
+	local common = "Tandem project: "
+		.. quote(root)
+		.. ". Use paths relative to this root.\n"
+		.. "Discover Tandem tools before acting; when tools are deferred, search the available tool metadata "
+		.. "(including ALL_TOOLS in code mode) for tandem.\n"
+		.. "Do not use native apply_patch, shell writes, or another writer for this project. "
+		.. "This project-specific routing supersedes generic instructions to use apply_patch. "
+		.. "If a higher-priority host instruction prevents this route, report the instruction conflict explicitly.\n"
+	if read_only then
+		return common
+			.. "Analysis-only Tandem session. Do not edit files. "
+			.. "Use tandem_read_file and tandem_status for inspection. This connection cannot write. "
+			.. "Do not seek broader permissions or another editing route."
+	end
+	return common
+		.. "The native filesystem sandbox is intentionally read-only; "
+		.. "the separately authorized Tandem writer can still edit through Neovim. "
+		.. "A native sandbox rejection does not mean project editing is unavailable.\n"
+		.. "For every project edit, call tandem_read_file, then tandem_write_file with the complete updated "
+		.. "content and expected_revision from that read (including missing for a new file).\n"
+		.. "Wait for unsaved human buffers. On busy, retry after the human saves. "
+		.. "On stale_revision, reread and regenerate the edit from the new content; "
+		.. "never attach a fresh revision to stale content. On outcome_unknown, reread before retrying.\n"
+		.. "If tools are missing or the editor is disconnected, use tandem_status when available and report "
+		.. "the Tandem connection/tool problem; suggest :TandemStatus or :TandemReconnect. "
+		.. "Do not ask for general filesystem write access or fall back to native writes."
 end
 
 -- Only build launch settings after the editor is attached. Never fall back to
 -- native writes when the gateway is unavailable or belongs to another project.
 function M.args(connection, options)
-  options = options or {}
-  if not connection.connected or not connection.root then
-    return nil, "Tandem is not connected. Check :TandemStatus before starting an agent."
-  end
-  local cwd = uv.fs_realpath(options.cwd or uv.cwd())
-  if not cwd or not inside(connection.root, cwd) then
-    return nil, "Agent cwd is outside Tandem's project. Open that project in another Neovim process."
-  end
-  if options.path then
-    local path = vim.fs.normalize(vim.fn.fnamemodify(options.path, ":p"))
-    if not inside(connection.root, path) then
-      return nil, "The target file is outside Tandem's project."
-    end
-  end
-  local command = vim.fn.exepath(connection.command or "tandem")
-  if command == "" then return nil, "Tandem CLI is missing; install the pinned CLI and reconnect." end
-  local args = { "--root", connection.root, "--state-home", connection.state_home, "mcp" }
-  local enabled_tools = { "tandem_read_file", "tandem_status" }
-  if options.read_only then
-    args[#args + 1] = "--read-only"
-  else
-    enabled_tools[#enabled_tools + 1] = "tandem_write_file"
-  end
-  local tool_settings = {}
-  for _, name in ipairs(enabled_tools) do
-    tool_settings[#tool_settings + 1] = name .. '={approval_mode="approve"}'
-  end
-  local server = "{command=" .. quote(command) .. ",args=" .. array(args)
-    .. ",enabled=true,required=true,startup_timeout_sec=10,tool_timeout_sec=35,enabled_tools="
-    .. array(enabled_tools) .. ",tools={" .. table.concat(tool_settings, ",") .. "}}"
-  return {
-    "--sandbox", "read-only",
-    "-c", 'approval_policy="never"',
-    "-c", "mcp_servers.tandem=" .. server,
-  }
+	options = options or {}
+	if not connection.connected or not connection.root then
+		return nil, "Tandem is not connected. Check :TandemStatus before starting an agent."
+	end
+	local cwd = uv.fs_realpath(options.cwd or uv.cwd())
+	if not cwd or not inside(connection.root, cwd) then
+		return nil, "Agent cwd is outside Tandem's project. Open that project in another Neovim process."
+	end
+	if options.path then
+		local path = vim.fs.normalize(vim.fn.fnamemodify(options.path, ":p"))
+		if not inside(connection.root, path) then
+			return nil, "The target file is outside Tandem's project."
+		end
+	end
+	local command = vim.fn.exepath(connection.command or "tandem")
+	if command == "" then
+		return nil, "Tandem CLI is missing; install the pinned CLI and reconnect."
+	end
+	local custom = options.developer_instructions
+	if custom == nil then
+		local failure
+		custom, failure = require("tandem.codex_config").instructions(cwd, options.codex_command)
+		if custom == nil then
+			return nil,
+				"Cannot preserve Codex instructions: "
+					.. failure
+					.. " Check the Codex CLI/configuration before restarting this protected launch."
+		end
+	elseif type(custom) ~= "string" then
+		return nil, "developer_instructions must be the host's effective instruction string."
+	end
+	local guidance = instructions(connection.root, options.read_only)
+	if custom ~= "" then
+		guidance = custom .. "\n\n" .. guidance
+	end
+	local args = { "--root", connection.root, "--state-home", connection.state_home, "mcp" }
+	local enabled_tools = { "tandem_read_file", "tandem_status" }
+	if options.read_only then
+		args[#args + 1] = "--read-only"
+	else
+		enabled_tools[#enabled_tools + 1] = "tandem_write_file"
+	end
+	local tool_settings = {}
+	for _, name in ipairs(enabled_tools) do
+		tool_settings[#tool_settings + 1] = name .. '={approval_mode="approve"}'
+	end
+	local server = "{command="
+		.. quote(command)
+		.. ",args="
+		.. array(args)
+		.. ",enabled=true,required=true,startup_timeout_sec=10,tool_timeout_sec=35,enabled_tools="
+		.. array(enabled_tools)
+		.. ",tools={"
+		.. table.concat(tool_settings, ",")
+		.. "}}"
+	return {
+		"--sandbox",
+		"read-only",
+		"-c",
+		'approval_policy="never"',
+		"-c",
+		"mcp_servers.tandem=" .. server,
+		"-c",
+		"developer_instructions=" .. quote(guidance),
+	}
 end
 
 return M

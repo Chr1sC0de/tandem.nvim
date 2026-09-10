@@ -9,3 +9,17 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y lua5.1
       - run: lua5.1 tests/gate_spec.lua
+  codex-launch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Neovim 0.12.5
+        run: |
+          curl --fail --location --retry 3 https://github.com/neovim/neovim/releases/download/v0.12.5/nvim-linux-x86_64.tar.gz -o "$RUNNER_TEMP/nvim.tar.gz"
+          printf '%s  %s\n' bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875 "$RUNNER_TEMP/nvim.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/nvim.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - name: Check Codex routing and configuration handling without model credentials
+        run: |
+          nvim --headless -u NONE -i NONE -l tests/codex_spec.lua
+          nvim --headless -u NONE -i NONE -l tests/codex_config_spec.lua
