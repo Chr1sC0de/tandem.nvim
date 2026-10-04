@@ -73,3 +73,50 @@ Local environment: Neovim 0.12.0, installed Tandem CLI 0.2.0.
   real-daemon harness. No remote CI result is claimed here.
 - Project edits were applied through Tandem. The Rust daemon, protocol,
   persisted lease format and Codex launch protections were not changed.
+
+## Protocol v2 and multiple editors — 2026-10-04
+
+Local environment: Neovim 0.12.0. Companion source and CI pin:
+`6fafe49c779cc2ab219ffa55096e4624cb84c9d1` (protocol v2; package version
+still `0.2.0`). The current live project daemon remains on protocol v1;
+it was not restarted during implementation.
+
+| Check | Result |
+| --- | --- |
+| Gateway suite | 13 passed |
+| Lifecycle suite | 24 passed, including real normal-exit and fatal-signal subprocesses |
+| Recovery suite | 16 passed |
+| Codex launch suite | 9 passed |
+| Codex configuration suite | 7 passed |
+| StyLua check of changed Lua files | Passed |
+| Workflow YAML parse and integration command check | Passed |
+| Single-editor and companion two-editor Python syntax | Passed |
+| `git diff --check` | Passed |
+| Matching CLI build | Blocked opening `target/debug/.cargo-build-lock`: read-only filesystem |
+| Single-editor integration | Blocked creating its temporary directory: read-only filesystem |
+| Two-editor integration | All five cases blocked in setup creating temporary directories |
+| Remote CI | Not triggered or observed for this change |
+
+The Lua checks used `nvim --headless -u NONE -i NONE -n -l tests/NAME_spec.lua`
+for `gate`, `lifecycle`, `recovery`, `codex`, and `codex_config`.
+Neovim reported sandbox restrictions on logging and its automatic server socket;
+the 69 tests completed successfully. Lifecycle and recovery fixtures replace disk
+and daemon boundaries, so those passes do not establish real-daemon integration.
+
+Coverage added beyond the companion patch includes initial and reconnect
+inventories with hidden buffers, v1 ready/status rejection, the old daemon's
+actual handshake rejection, malformed and duplicate editor identities, an empty
+editor registry, and shutdown while another editor remains connected. Recovery
+also checks a selected owner reconnecting alongside the existing live editor.
+
+CI builds the pinned CLI with `cargo build --locked`, runs all five Lua suites,
+then runs this repository's single-editor harness and the pinned companion's
+two-editor harness against this checkout. Integration must pass in CI or an
+environment allowing build artifacts, temporary files and Unix sockets before
+live cutover. No real transport success is claimed here.
+
+All project edits were saved through Tandem. Agent read/write inputs, synchronous
+Lua status fields, Codex launch protections, and the persisted lease format are
+unchanged. Follow the README's protocol v1 upgrade sequence to switch the daemon,
+plugin and agent sessions together. Publishing and replacement of the companion
+repository's temporary CI patch remain separate release work.

@@ -260,13 +260,13 @@ def main():
                     # Neovim may close the RPC connection before sending a reply.
                     pass
                 assert process.wait(timeout=3) == 0
-                until(lambda: run_cli("status")["editor"] is None)
+                until(lambda: run_cli("status")["editors"] == [])
 
             def crash_editor(process):
                 owner = local_status()["owner"]
                 process.kill()
                 process.wait(timeout=3)
-                until(lambda: run_cli("status")["editor"] is None)
+                until(lambda: run_cli("status")["editors"] == [])
                 return owner
 
             def answer_recovery(owner=None, confirm=False, cancel=False):
@@ -407,7 +407,7 @@ def main():
                 )
             )
             expr("vim.cmd('TandemReconnect')")
-            until(lambda: run_cli("status")["editor"] is None)
+            until(lambda: run_cli("status")["editors"] == [])
             until(lambda: local_status()["connected"])
             assert local_status()["owner"] == current
 

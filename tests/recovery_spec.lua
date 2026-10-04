@@ -25,7 +25,7 @@ local function new_fixture()
 		printed = {},
 		status = {
 			ok = true,
-			protocol = 1,
+			protocol = 2,
 			root = root,
 			leases = { ["a.txt"] = { "old-a" }, ["b.txt"] = { "old-b" } },
 		},
@@ -38,7 +38,7 @@ local function new_fixture()
 	vim.fn.chansend = function(_, text)
 		local message = vim.json.decode(text)
 		if message.method == "hello" then
-			f.status.editor = { owner = message.owner }
+			f.status.editors = { { owner = message.owner } }
 		end
 		return #text
 	end
@@ -63,7 +63,11 @@ local function new_fixture()
 			assert(command[7] == "--owner")
 			local owner = command[8]
 			f.releases[#f.releases + 1] = owner
-			if f.release_error or owner == f.status.editor.owner then
+			local live = false
+			for _, editor in ipairs(f.status.editors) do
+				live = live or editor.owner == owner
+			end
+			if f.release_error or live then
 				value = { ok = false, error = { message = f.release_error or "editor connected" } }
 				result.code = 1
 			else
@@ -97,7 +101,7 @@ local function new_fixture()
 	package.loaded["tandem"] = nil
 	f.plugin = require("tandem")
 	f.plugin.setup({ command = "configured-tandem", root = root, state_home = "/test state" })
-	f.callbacks.on_stdout(123456, { '{"event":"ready","protocol":1}', "" })
+	f.callbacks.on_stdout(123456, { '{"event":"ready","protocol":2}', "" })
 	drain()
 	function f.answer(index)
 		local prompt = table.remove(f.prompts, 1)
@@ -120,6 +124,45 @@ local function test(name, run)
 	print("ok " .. count .. " - " .. name)
 end
 local ok, failure = xpcall(function()
+	test("v1 status cannot open recovery and explains the upgrade", function(f)
+		f.status.protocol = 1
+		f.recover()
+		assert(#f.prompts == 0 and #f.releases == 0)
+		local notices = table.concat(f.notifications, "\n")
+		assert(notices:find("protocol v2", 1, true))
+		assert(notices:find("restart", 1, true))
+	end)
+
+	test("malformed and duplicate editor identities cannot open recovery", function(f)
+		for _, editors in ipairs({
+			vim.NIL,
+			{ owner = "not-an-array" },
+			{ "not-an-editor" },
+			{ {} },
+			{ { owner = "" } },
+			{ { owner = 17 } },
+			{ { owner = "duplicate" }, { owner = "duplicate" } },
+		}) do
+			f.status.editors = editors
+			f.notifications = {}
+			f.recover()
+			assert(#f.prompts == 0 and #f.releases == 0)
+			assert(
+				table.concat(f.notifications, "\n"):find("Invalid Tandem editor status", 1, true),
+				vim.inspect(editors) .. ": " .. table.concat(f.notifications, "\n")
+			)
+		end
+	end)
+
+	test("an empty editor registry permits disconnected-owner recovery", function(f)
+		f.status.editors = {}
+		f.recover()
+		f.answer(2)
+		f.answer(2)
+		assert(vim.deep_equal(f.releases, { "old-a" }))
+		assert(f.status.leases["a.txt"] == nil)
+	end)
+
 	test("recovery cancellation leaves disconnected owners untouched", function(f)
 		f.recover()
 		assert(#f.prompts == 1)
@@ -127,8 +170,19 @@ local ok, failure = xpcall(function()
 		assert(#f.releases == 0 and f.status.leases["a.txt"][1] == "old-a")
 	end)
 
+	test("every connected owner is excluded from recovery", function(f)
+		f.status.editors[#f.status.editors + 1] = { owner = "second-live" }
+		f.status.leases["c.txt"] = { "second-live" }
+		f.recover()
+		assert(#f.prompts[1].items == 3, "a second live editor was offered for recovery")
+		for _, row in ipairs(f.prompts[1].items) do
+			assert(row.owner ~= "second-live")
+		end
+		f.answer(1)
+	end)
+
 	test("confirmation releases only the selected disconnected owner", function(f)
-		f.status.leases["a.txt"] = { "old-a", f.status.editor.owner }
+		f.status.leases["a.txt"] = { "old-a", f.status.editors[1].owner }
 		f.recover()
 		local choices = f.prompts[1].items
 		assert(#choices == 3, "connected owner must never be offered")
@@ -137,7 +191,7 @@ local ok, failure = xpcall(function()
 		assert(f.prompts[1].items[1] == "Cancel")
 		f.answer(2)
 		assert(vim.deep_equal(f.releases, { "old-a" }))
-		assert(vim.deep_equal(f.status.leases["a.txt"], { f.status.editor.owner }))
+		assert(vim.deep_equal(f.status.leases["a.txt"], { f.status.editors[1].owner }))
 		assert(f.status.leases["b.txt"][1] == "old-b")
 		assert(table.concat(f.notifications, "\n"):find("Remaining lease blockers", 1, true))
 	end)
@@ -161,7 +215,7 @@ local ok, failure = xpcall(function()
 	test("a selected owner reconnecting cannot be released", function(f)
 		f.recover()
 		f.answer(2)
-		f.status.editor.owner = "old-a"
+		f.status.editors[#f.status.editors + 1] = { owner = "old-a" }
 		f.answer(2)
 		assert(#f.releases == 0)
 		for _, row in ipairs(f.prompts[1].items) do
@@ -203,7 +257,7 @@ local ok, failure = xpcall(function()
 	end)
 	test("startup notifies once per owner and status preserves the Lua API", function(f)
 		assert(#f.notifications == 2)
-		f.callbacks.on_stdout(123456, { '{"event":"ready","protocol":1}', "" })
+		f.callbacks.on_stdout(123456, { '{"event":"ready","protocol":2}', "" })
 		drain()
 		assert(#f.notifications == 2)
 		vim.cmd("TandemStatus")

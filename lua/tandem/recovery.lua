@@ -2,14 +2,19 @@ local cli = require("tandem.cli")
 local M = {}
 
 local function connected(status)
-	return type(status.editor) == "table" and status.editor.owner or nil
+	local owners = {}
+	for _, editor in ipairs(status.editors) do
+		owners[editor.owner] = true
+	end
+	return owners
 end
 
 local function retained(status)
 	local by_owner = {}
+	local live = connected(status)
 	for path, owners in pairs(status.leases) do
 		for _, owner in ipairs(owners) do
-			if owner ~= connected(status) then
+			if not live[owner] then
 				by_owner[owner] = by_owner[owner] or {}
 				table.insert(by_owner[owner], path)
 			end
@@ -28,7 +33,7 @@ end
 
 -- Include every holder of each affected file, not just the selected owner.
 local function snapshot(status, owner)
-	local result = { editor = connected(status), files = {} }
+	local result = { editors = connected(status), files = {} }
 	for path, owners in pairs(status.leases) do
 		if vim.tbl_contains(owners, owner) then
 			result.files[path] = vim.deepcopy(owners)
@@ -162,7 +167,7 @@ function M.new(config, generation)
 							fail(err)
 							return
 						end
-						if connected(fresh) == row.owner or not vim.deep_equal(before, snapshot(fresh, row.owner)) then
+						if connected(fresh)[row.owner] or not vim.deep_equal(before, snapshot(fresh, row.owner)) then
 							notify(
 								"Lease ownership or affected files changed. Review the refreshed selection.",
 								vim.log.levels.WARN

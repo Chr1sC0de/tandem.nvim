@@ -7,15 +7,17 @@ The companion Rust daemon and CLI live in [tandem](https://github.com/Chr1sC0de/
 
 ## Status
 
-Initial implementation. All 13 Lua gateway tests pass inside Neovim 0.12.5.
-The companion Rust build and five unit tests pass locally; the complete daemon
-and real Neovim integration pass in GitHub Actions. The authoring workspace
-blocks Unix sockets, preventing the local daemon/editor integration run.
-See [VERIFICATION.md](VERIFICATION.md) for the recorded results.
+The plugin implements editor protocol v2 for multiple Neovim processes per
+project. CI builds the matching CLI and exercises single-editor and two-editor
+integration. See [VERIFICATION.md](VERIFICATION.md) for recorded results and
+checks that the local sandbox could not run.
 
 Requires Neovim 0.10+, Linux/macOS, and the `tandem` executable on PATH.
-The Codex launch helper and lease recovery require Tandem CLI 0.2 or newer.
-Currently supports one Neovim process per project, multiple participating agents,
+Requires the matching protocol v2 Tandem CLI, pinned in CI to commit
+`6fafe49c779cc2ab219ffa55096e4624cb84c9d1`. Older protocol v1 daemons
+are unsupported. The CLI package still reports `0.2.0`; that version number
+alone does not establish compatibility.
+Supports multiple Neovim processes per project and multiple participating agents,
 and ordinary UTF-8 text files up to 1 MiB with Unix newlines. Start a new Neovim
 process for another project; changing cwd does not switch the daemon root.
 
@@ -190,8 +192,34 @@ per request. Failures are reported without automatically retrying a release.
 The existing `tandem release --owner OWNER` command remains available for manual
 recovery. Never delete `leases.json`.
 
-The change uses CLI 0.2.0 and protocol 1 without changing persisted state.
+The plugin requires editor protocol v2 and a matching Tandem CLI. Persisted dirty
+leases are unchanged.
 Restart Neovim after updating the plugin to load the new lifecycle handlers.
+
+## Upgrade from protocol v1
+
+Complete validation before switching a live project. Updating the executable
+does not replace an already-running daemon, and `:TandemReconnect` only restarts
+the editor bridge.
+
+1. Finish agent operations and save or recover work in every Neovim session for
+   the project. Record the project daemon's `pid` from `tandem status`, using
+   the configured executable, root and state directory.
+1. Close participating agents and Neovim sessions. Install this plugin and the
+   matching v2 CLI together.
+1. Check that the recorded PID still belongs to this project's Tandem daemon,
+   then stop that process with SIGTERM. Preserve the state directory and
+   `leases.json`; no persisted-state migration is required.
+1. Reopen Neovim with the same project root and state directory. The plugin starts
+   the new daemon automatically. Confirm `:TandemStatus` or `tandem status`
+   reports `protocol: 2`, the expected `editors` array, and no fault.
+1. Review any retained claims with `:TandemRecover` after recovering or
+   deliberately discarding that work. Start fresh agent sessions.
+
+Each Neovim process remains attached to one project. The daemon status now
+contains an `editors` array instead of a singular `editor` field.
+`require("tandem").status()` keeps its existing synchronous, current-editor
+fields; setup and Codex launch interfaces are unchanged.
 
 ## Tests
 
@@ -208,6 +236,7 @@ texlua tests/gate_spec.lua
 
 # After building the companion Rust CLI, with Neovim on PATH:
 python3 tests/e2e.py ../tandem/target/debug/tandem
+python3 ../tandem/tests/multi_editor.py ../tandem/target/debug/tandem .
 ```
 
 The standalone tests cover dirty-buffer races, stale revisions, save failures,
@@ -225,7 +254,11 @@ save/quit, hidden-buffer exit and fatal signals. Recovery tests cover cancellati
 selected-owner release, ownership changes, stale dialogs and CLI failures.
 The end-to-end harness also covers crashes followed by new editor sessions,
 guided recovery, concurrent clients, and stable ownership across reconnects.
-CI builds a pinned, unchanged CLI 0.2.0 and runs these real-daemon scenarios.
+CI builds the pinned protocol v2 CLI and runs these real-daemon scenarios plus
+the companion's two-editor harness against this checkout. The latter covers
+independent drafts, waiting for all claims, loaded-buffer routing, normal peer
+file-change handling, and crash-retained leases. Use the pinned companion
+revision for local integration runs too.
 
 The Codex launch tests cover editing/analysis guidance, preservation of existing
 instructions, TOML escaping, and configuration lookup failures. Configuration
@@ -255,3 +288,16 @@ fails rather than claiming tool-selection coverage. See Codex's
 [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
 and [app-server protocol](https://learn.chatgpt.com/docs/app-server) for the
 interfaces used by the instruction lookup.
+
+## Multiple editors
+
+Editors keep independent buffers. Tandem waits for every reported dirty lease before
+agent operations; each save or discard releases only that editor's claim. Human
+editing and saves use normal Neovim behavior, including conflicts and autoread.
+Peer save notifications request normal file-change checks without replacing drafts.
+Agent writes prefer the oldest connected editor with the file loaded, falling back
+to the oldest connection. Focus does not affect routing.
+
+Typing in another process can race an already dispatched agent write before its
+claim arrives. The other buffer is preserved; Neovim handles the disk change.
+There are no ownership handoffs, typing locks, or extra checks on human saves.

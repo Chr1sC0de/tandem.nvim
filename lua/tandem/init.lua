@@ -1,6 +1,8 @@
 local M = {}
 local uv = vim.uv or vim.loop
 local gate = require("tandem.buffer")
+local protocol_error =
+	"unsupported daemon protocol; install matching Tandem CLI and tandem.nvim protocol v2 versions, then restart the project daemon and Neovim"
 local state = {
 	job = nil,
 	ready = false,
@@ -99,6 +101,33 @@ local function find_buffer(path)
 	end
 end
 
+local function loaded_paths()
+	local paths, seen = {}, {}
+	for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+		local path = vim.api.nvim_buf_is_loaded(buf) and buffer_path(buf)
+		if path and not seen[path] then
+			seen[path] = true
+			paths[#paths + 1] = path
+		end
+	end
+	table.sort(paths)
+	return paths
+end
+
+local inventory_pending = false
+local function schedule_inventory()
+	if inventory_pending or state.stopped then
+		return
+	end
+	inventory_pending = true
+	vim.schedule(function()
+		inventory_pending = false
+		if state.ready and not state.stopped then
+			send({ method = "buffers", paths = loaded_paths() })
+		end
+	end)
+end
+
 local function disk(path)
 	local fd, err, code = uv.fs_open(path, "r", 438)
 	if not fd then
@@ -154,11 +183,15 @@ local function reconcile(buf, path)
 		claim(path, buf)
 		return
 	end
+	local record = state.buffers[buf]
 	local saved = disk(path)
 	if not saved or not matches(buf, saved.content) then
-		claim(path, buf)
+		-- A peer save can make an untouched buffer stale. Only retain an
+		-- existing local claim here; :set nomodified must not release a draft.
+		if record and record.paths[path] then
+			claim(path, buf)
+		end
 	else
-		local record = state.buffers[buf]
 		if record then
 			record.paths[path] = nil
 		end
@@ -290,10 +323,12 @@ local function queue_unload(buf)
 		end
 		unloading[buf] = nil
 		discard_unloaded(buf, record)
+		schedule_inventory()
 	end)
 end
 
 local function attach(buf)
+	schedule_inventory()
 	local path = buffer_path(buf)
 	if not path or not vim.api.nvim_buf_is_loaded(buf) then
 		return
@@ -325,6 +360,7 @@ local function attach(buf)
 		end,
 		on_detach = function(_, b)
 			state.attached[b] = nil
+			schedule_inventory()
 			-- BufUnload retains the path snapshot until the deferred discard check.
 		end,
 		on_reload = function(_, b)
@@ -394,8 +430,12 @@ local function shutdown()
 			failure = err
 			break
 		end
-		local editor = status.editor ~= vim.NIL and status.editor or nil
-		verified = not editor or editor.owner ~= state.owner
+		verified = true
+		for _, editor in ipairs(status.editors) do
+			if editor.owner == state.owner then
+				verified = false
+			end
+		end
 		for path in pairs(state.released) do
 			if not state.dirty[path] then
 				for _, owner in ipairs(status.leases[path:sub(#state.root + 2)] or {}) do
@@ -426,11 +466,13 @@ end
 local connect
 local function handle(event)
 	if event.event == "ready" then
-		if event.protocol ~= 1 then
-			error("unsupported daemon protocol")
+		if event.protocol ~= 2 then
+			state.ready = false
+			error(protocol_error)
 		end
 		state.ready, state.error = true, nil
 		state.recovery.ready()
+		schedule_inventory()
 		-- A previous save acknowledgment may have been lost during disconnect.
 		for path, method in pairs(state.released) do
 			if not state.dirty[path] then
@@ -438,6 +480,24 @@ local function handle(event)
 			end
 		end
 		emit()
+	elseif event.event == "file_changed" then
+		local path = type(event.relative_path) == "string" and validate_path(state.root .. "/" .. event.relative_path)
+		if path then
+			for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+				local record = state.buffers[buf]
+				if
+					vim.api.nvim_buf_is_loaded(buf)
+					and buffer_path(buf) == path
+					and not vim.bo[buf].modified
+					and not (record and record.paths[path])
+					and not held_elsewhere(buf, path)
+				then
+					-- Respect autoread and FileChangedShell; never force a reload.
+					vim.cmd("checktime " .. buf)
+					schedule_reconcile(buf)
+				end
+			end
+		end
 	elseif event.event == "apply" then
 		local ok, result = pcall(gate.apply, event, context())
 		if not ok then
@@ -451,6 +511,10 @@ local function handle(event)
 		send({ method = "apply_result", id = event.id, result = result })
 	elseif event.ok == false then
 		state.error = event.error and event.error.message or "daemon error"
+		if state.error == "unsupported editor protocol" then
+			state.ready = false
+			state.error = protocol_error
+		end
 		emit()
 	end
 end
@@ -536,9 +600,10 @@ connect = function()
 	-- Neovim encodes an ordinary empty Lua table as JSON [].
 	send({
 		method = "hello",
-		protocol = 1,
+		protocol = 2,
 		owner = state.owner,
 		dirty = dirty,
+		buffers = loaded_paths(),
 		herdr = {
 			socket = vim.env.HERDR_SOCKET_PATH,
 			workspace = vim.env.HERDR_WORKSPACE_ID,

@@ -89,14 +89,18 @@ local function new_fixture()
 		for path in pairs(f.leases) do
 			leases[path:sub(#root + 2)] = { f.owner }
 		end
+		local editors = vim.deepcopy(f.peers or {})
+		if not f.closed then
+			table.insert(editors, { owner = f.owner })
+		end
 		local result = {
 			code = 0,
 			stdout = vim.json.encode({
 				ok = true,
-				protocol = 1,
+				protocol = 2,
 				root = root,
 				leases = leases,
-				editor = f.closed and vim.NIL or { owner = f.owner },
+				editors = editors,
 			}),
 			stderr = "",
 		}
@@ -123,7 +127,7 @@ local function new_fixture()
 	package.loaded["tandem"] = nil
 	f.plugin = require("tandem")
 	f.plugin.setup({ root = root, command = "fake-tandem" })
-	f.callbacks.on_stdout(123456, { '{"event":"ready","protocol":1}', "" })
+	f.callbacks.on_stdout(123456, { '{"event":"ready","protocol":2}', "" })
 	drain()
 	function f.edit(text)
 		vim.api.nvim_buf_set_lines(f.buf, 0, -1, false, { text })
@@ -175,6 +179,108 @@ local function test(name, run)
 end
 
 local ok, failure = xpcall(function()
+	test("hello and reconnect inventories include hidden loaded buffers", function(f)
+		local function latest(method)
+			for i = #f.messages, 1, -1 do
+				if f.messages[i].method == method then
+					return f.messages[i]
+				end
+			end
+			error("missing " .. method)
+		end
+		local hello = latest("hello")
+		assert(hello.protocol == 2)
+		assert(vim.deep_equal(hello.buffers, { root .. "/file.txt" }))
+		local owner = hello.owner
+		vim.cmd("hide enew")
+		assert(vim.fn.bufwinid(f.buf) == -1)
+		local second = vim.api.nvim_create_buf(true, false)
+		vim.api.nvim_buf_set_name(second, root .. "/second.txt")
+		drain()
+		assert(vim.deep_equal(latest("buffers").paths, { root .. "/file.txt", root .. "/second.txt" }))
+		f.callbacks.on_exit(123456, 0)
+		vim.api.nvim_buf_set_name(f.buf, root .. "/renamed.txt")
+		drain()
+		vim.cmd("TandemReconnect")
+		hello = latest("hello")
+		assert(hello.owner == owner)
+		assert(vim.deep_equal(hello.buffers, { root .. "/renamed.txt", root .. "/second.txt" }))
+		f.callbacks.on_stdout(123456, { '{"event":"ready","protocol":2}', "" })
+		drain()
+		assert(vim.deep_equal(latest("buffers").paths, hello.buffers))
+	end)
+
+	test("v1 ready is rejected with upgrade and restart guidance", function(f)
+		f.callbacks.on_exit(123456, 0)
+		vim.cmd("TandemReconnect")
+		f.callbacks.on_stdout(123456, { '{"event":"ready","protocol":1}', "" })
+		drain()
+		local status = f.plugin.status()
+		assert(not status.connected)
+		assert(status.error:find("protocol v2", 1, true))
+		assert(status.error:find("restart", 1, true))
+	end)
+
+	test("v1 handshake rejection explains coordinated restart", function(f)
+		f.callbacks.on_exit(123456, 0)
+		vim.cmd("TandemReconnect")
+		f.callbacks.on_stdout(123456, {
+			vim.json.encode({
+				ok = false,
+				error = { code = "connection_error", message = "unsupported editor protocol" },
+			}),
+			"",
+		})
+		drain()
+		local status = f.plugin.status()
+		assert(not status.connected)
+		assert(status.error:find("protocol v2", 1, true))
+		assert(status.error:find("restart", 1, true))
+	end)
+
+	test("shutdown succeeds while another editor remains connected", function(f)
+		f.peers = { { owner = "second-live" } }
+		f.edit("human")
+		vim.api.nvim_exec_autocmds("VimLeavePre", {})
+		assert(f.closed and not f.leased())
+		assert(f.plugin.status().error == nil)
+		assert(#f.notifications == 0, table.concat(f.notifications, "\n"))
+	end)
+
+	test("loaded buffer snapshots follow rename and unload", function(f)
+		local function inventory()
+			for i = #f.messages, 1, -1 do
+				if f.messages[i].method == "buffers" then
+					return f.messages[i].paths
+				end
+			end
+		end
+		assert(vim.deep_equal(inventory(), { root .. "/file.txt" }))
+		vim.api.nvim_buf_set_name(f.buf, root .. "/renamed.txt")
+		drain()
+		assert(vim.deep_equal(inventory(), { root .. "/renamed.txt" }))
+		vim.api.nvim_buf_delete(f.buf, { force = true })
+		drain()
+		assert(vim.deep_equal(inventory(), {}))
+	end)
+
+	test("peer saves request checktime without changing autoread", function(f)
+		local command, calls = vim.cmd, {}
+		vim.bo[f.buf].autoread = false
+		vim.cmd = function(text)
+			calls[#calls + 1] = text
+		end
+		f.callbacks.on_stdout(123456, {
+			vim.json.encode({ event = "file_changed", relative_path = "file.txt" }),
+			"",
+		})
+		drain()
+		vim.cmd = command
+		assert(vim.deep_equal(calls, { "checktime " .. f.buf }))
+		assert(not vim.bo[f.buf].autoread)
+		assert(not f.leased() and not vim.bo[f.buf].modified)
+	end)
+
 	test("undo back to saved content releases its lease", function(f)
 		f.edit("human")
 		assert(f.leased(), "editing must claim")
@@ -182,6 +288,26 @@ local ok, failure = xpcall(function()
 		drain()
 		assert(not vim.bo[f.buf].modified, "fixture undo must restore the saved state")
 		assert(not f.leased(), "undo to saved content stranded a lease")
+	end)
+
+	test("a clean peer buffer becoming stale does not claim unsaved work", function(f)
+		f.disk = "saved elsewhere\n"
+		vim.api.nvim_exec_autocmds("BufModifiedSet", { buffer = f.buf })
+		drain()
+		assert(not f.leased(), "an untouched stale buffer must not block agents")
+		assert(vim.bo[f.buf].modifiable and not vim.bo[f.buf].readonly)
+	end)
+
+	test("peer changes preserve dirty drafts and normal buffer options", function(f)
+		f.edit("local draft")
+		f.callbacks.on_stdout(123456, {
+			vim.json.encode({ event = "file_changed", relative_path = "file.txt" }),
+			"",
+		})
+		drain()
+		assert(vim.api.nvim_buf_get_lines(f.buf, 0, -1, false)[1] == "local draft")
+		assert(f.leased() and vim.bo[f.buf].modified)
+		assert(vim.bo[f.buf].modifiable and not vim.bo[f.buf].readonly)
 	end)
 
 	test("nomodified cannot release text that differs from disk", function(f)
@@ -313,7 +439,7 @@ local ok, failure = xpcall(function()
 	test("callbacks from an exited bridge cannot mark the editor ready", function(f)
 		local old = f.callbacks
 		old.on_exit(123456, 0)
-		old.on_stdout(123456, { '{"event":"ready","protocol":1}', "" })
+		old.on_stdout(123456, { '{"event":"ready","protocol":2}', "" })
 		drain()
 		local connected = f.plugin.status().connected
 		vim.api.nvim_exec_autocmds("VimLeavePre", {})

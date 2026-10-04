@@ -16,15 +16,27 @@ local function decode(result, config, status)
 				or "Invalid Tandem CLI response"
 	end
 	if status then
-		if value.protocol ~= 1 or value.root ~= config.root or type(value.leases) ~= "table" then
+		if value.protocol ~= 2 then
+			return nil,
+				"unsupported daemon protocol; install matching Tandem CLI and tandem.nvim protocol v2 versions, then restart the project daemon and Neovim"
+		end
+		if value.root ~= config.root or type(value.leases) ~= "table" then
 			return nil, "Invalid Tandem status for this project"
 		end
-		if
-			value.editor ~= nil
-			and value.editor ~= vim.NIL
-			and (type(value.editor) ~= "table" or type(value.editor.owner) ~= "string")
-		then
+		if type(value.editors) ~= "table" or not vim.islist(value.editors) then
 			return nil, "Invalid Tandem editor status"
+		end
+		local seen = {}
+		for _, editor in ipairs(value.editors) do
+			if
+				type(editor) ~= "table"
+				or type(editor.owner) ~= "string"
+				or editor.owner == ""
+				or seen[editor.owner]
+			then
+				return nil, "Invalid Tandem editor status"
+			end
+			seen[editor.owner] = true
 		end
 		for path, owners in pairs(value.leases) do
 			if type(path) ~= "string" or type(owners) ~= "table" or not vim.islist(owners) then

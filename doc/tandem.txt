@@ -2,7 +2,9 @@
 
 SETUP                                                     *tandem-setup*
 
-Requires Neovim 0.10+, Unix, and the tandem Rust CLI on PATH.
+Requires Neovim 0.10+, Unix, and the matching protocol v2 Tandem CLI on PATH.
+Multiple Neovim processes may connect to one project. Protocol v1 is unsupported;
+CLI package version 0.2.0 alone does not identify protocol compatibility.
 Call require('tandem').setup({}) once per editor. One project/editor at a time.
 The daemon starts automatically. Configure agents to use its MCP or CLI gateway.
 Native agent tools and shell writes are not intercepted automatically.
@@ -76,7 +78,34 @@ After connection, a retained owner is reported once per Neovim session.
 synchronous and retains its existing fields.
 
 Manual recovery is also available with tandem release --owner OWNER after
-reviewing tandem status. Never delete leases.json. Uses CLI 0.2.0/protocol 1;
-restart Neovim after updating the plugin.
+reviewing tandem status. Never delete leases.json. Requires matching CLI/editor
+protocol v2; restart Neovim after updating the plugin.
+
+MULTIPLE EDITORS                                           *tandem-multi-editor*
+
+Each process keeps independent buffers and normal save/conflict behavior. Agent
+operations wait for every reported dirty claim; each editor releases only its own.
+Writes prefer the oldest connection with the file loaded, otherwise the oldest
+connection. Hidden loaded buffers count. Focus does not affect routing.
+
+Peer saves request normal file-change checks, respecting autoread and
+FileChangedShell. Dirty drafts are preserved. Typing in another process may race
+an already dispatched write before its claim arrives; this is not an atomic
+all-editor cleanliness check.
+
+Daemon status uses an editors array. The synchronous status() Lua API still
+describes the current editor and keeps its existing fields.
+
+UPGRADING                                                 *tandem-upgrade*
+
+Use the matching CLI revision pinned by this plugin's CI. Finish agent operations,
+save or recover work, and record this project's daemon PID from tandem status.
+Close participating agents and Neovim sessions; install the matching CLI/plugin.
+Verify the PID still identifies that project daemon, then stop it with SIGTERM.
+Keep leases.json and the state directory. Reopen Neovim to start the v2 daemon.
+Confirm protocol 2, the expected editors and no fault, then restart agents.
+
+:TandemReconnect restarts the bridge, not an old daemon. Review retained claims
+with :TandemRecover only after recovering or deliberately discarding the work.
 
  vim:tw=78:ts=8:noet:ft=help:norl:
